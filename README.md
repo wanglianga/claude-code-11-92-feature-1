@@ -11,6 +11,12 @@
 - 接口文档：springdoc-openapi，`/swagger-ui.html`
 - 一键启动：`Dockerfile` + `docker-compose.yml`（PostgreSQL 18）
 
+> 🆕 **本题新增「⑥ 舱口顺序 · 纵倾力矩 · 岸桥交叉工作台」**：给定舱位位置/各舱货重/压载调整能力/
+> 岸桥禁入组合，生成带 1 小时时间片的作业序列，对比 **舱序优先** 与 **岸桥并行** 两种排法的
+> 首小时安排、总时长与被拒步骤；并把**实测完成量**与**压载实测回执**用于后续重排——
+> **压载回执迟到/未到时，计划值绝不会被当作实测**。样例数值、API、界面与验证见
+> [第 11 节](#11-舱口顺序--纵向力矩--岸桥交叉工作台本次新增)。
+
 ---
 
 ## 1. 题目场景与内置样例
@@ -89,8 +95,10 @@ src/main/java/com/port/berth/
   service/                        # PlanningEngine / PlanService / HoldSweeper
                                   # ExecutionService / DisruptionService / ReplanService
                                   # ReplayService / SeedService / AuthService
-  web/                            # REST 控制器、全局异常处理
-src/test/java/.../                # 4 个纯单元测试（约束数学 + 样例唯一窗口规格）
+  hatch/                          # 【新增】舱口/纵倾/岸桥禁入：HatchConfig、HatchPlanner
+                                  # HatchActuals（计划≠实测）、HatchService（持久化/重排/自验）
+  web/                            # REST 控制器、全局异常处理（含 HatchController）
+src/test/java/.../                # 13 个单元测试：约束数学 + 样例窗口 + 9 个舱口规划/实测用例
 ```
 
 ---
@@ -100,7 +108,7 @@ src/test/java/.../                # 4 个纯单元测试（约束数学 + 样例
 ### 5.1 Docker Compose（推荐，干净环境）
 
 ```bash
-cd /workspace/92
+cd /workspace/92-feature-1
 docker compose up --build
 ```
 
@@ -125,7 +133,7 @@ PostgreSQL 18 已在 `127.0.0.1:5432` 运行，开发库/账号 `ccdev/ccdev`：
 # 若数据库进程未运行，可尝试：
 # /opt/postgresql-18/bin/pg_ctl -D /tmp/cc-services/postgres -l /tmp/pg.log start
 
-cd /workspace/92
+cd /workspace/92-feature-1
 export JAVA_HOME=/opt/jdk-25
 mvn spring-boot:run
 # 或：mvn package && /opt/jdk-25/bin/java -jar target/berth-coordination.jar
@@ -168,9 +176,11 @@ TOKEN=$(curl -s -X POST http://127.0.0.1:8080/api/auth/login \
 
 ```bash
 mvn test
-# Tests run: 4, Failures: 0, Errors: 0, Skipped: 0  → BUILD SUCCESS
+# Tests run: 13, Failures: 0, Errors: 0, Skipped: 0  → BUILD SUCCESS
+#   ConstraintMathTest 3 + ScenarioWindowTest 1（既有，无回归）
+#   hatch.HatchPlannerTest 9（新增：首小时/总时长/被拒步骤/纵倾/压载迟到不冒充实测）
 
-mvn package
+mvn clean package
 # 生成 target/berth-coordination.jar（约 28 MB，Spring Boot fat jar）
 ```
 
@@ -179,7 +189,18 @@ mvn package
 bash scripts/replay.sh
 # ==> 断言：46/46 通过；allPassed=True
 # ALL_REPLAY_CHECKS_PASSED
+
+# 本题新增特性的一键验证（内置 15 项服务级断言 + 13 项真实 HTTP 断言）
+bash scripts/hatch-verify.sh
+# ==> POST /api/hatch/verify -> 200，allPassed=True，15/15
+# HATCH_HTTP_FLOW_PASSED
+# ALL_HATCH_CHECKS_PASSED
 ```
+
+> 上述 `mvn test`、`mvn clean package`、两个脚本（`replay.sh` 46/46、`hatch-verify.sh` 全过）
+> 以及全新空库 8081 端口首启 + `hatch-verify.sh` 均在本次开发中**真实执行并通过**；
+> 另用 Node 22 对真实 `/api/hatch/sample`、案例 JSON 做了前端渲染冒烟（模板不抛错、关键数值/按钮就位）。
+> 工作区文本文件已统一为 LF 行尾，`bash scripts/replay.sh` 可直接运行（物化时曾是 CRLF）。
 
 该脚本真实登录、调用 `POST /api/replays/full`（约 12 秒，含真实 2s TTL 等待、
 500ms 扫描释放与双线程并发确认竞速），递归统计全部断言并以退出码反映结果。
@@ -252,7 +273,8 @@ bash scripts/replay.sh
 | `POST /api/plans/{id}/change-berth` | DISPATCHER+ | 改靠/改时指令 |
 | `GET /api/disruptions[/{id}]` | 登录 | 扰动与影响项 |
 | `POST /api/replays/orderings|disruptions|full` | DISPATCHER+ | 一键回放 |
-| `POST /api/admin/reset` | DISPATCHER+ | 清空并恢复固定样例 |
+| `/api/hatch/**`（样例对比/校验/案例/实测/压载回执/实测重排/自验） | 登录；写操作 TEAM/DISPATCHER，自验 DISPATCHER | **舱口顺序·纵倾工作台，详见 [第 11 节](#11-舱口顺序--纵向力矩--岸桥交叉工作台本次新增)** |
+| `POST /api/admin/reset` | DISPATCHER+ | 清空并恢复固定样例（同时清空 hatch_* 表） |
 
 ---
 
@@ -264,3 +286,121 @@ bash scripts/replay.sh
 - `HoldSweeper` 每 500ms 扫描 `STAGED` 且到期的方案，释放其 `TENTATIVE` 占用并写 `HOLD_EXPIRED` 事件。
 - `ccdev/ccdev` 是任务容器的隔离开发账号，**不要直接作为生产配置**；Compose 使用独立的 `berth` 库与密码。
 - 服务不依赖 Redis/港口实机/第三方账号；外部潮汐与设备状态全部来自库内模拟表和模拟录入接口。
+
+---
+
+## 11. 舱口顺序 / 纵向力矩 / 岸桥交叉工作台（本次新增）
+
+原有装卸表只写“岸桥数量”，本特性补齐现场必须决定的**舱口顺序、纵向（纵倾）力矩、岸桥禁入/交叉**，
+生成带时间片的作业序列，并把**实测完成量**与**压载回执**用于后续重排。后端在独立的
+`com.port.berth.hatch` 包（纯规划器 `HatchPlanner` + 实测基准 `HatchActuals` + 持久化 `HatchService`），
+REST 为 `HatchController`（Swagger Tag「舱口顺序与纵倾工作台」），前端是单页第 **⑥** 个标签。
+
+### 11.1 模型与力矩口径
+
+- 舱口 `Hatch{code, positionM(x), cargoT, order}`：`x=0` 为船中，向船首为正。
+- 压载舱 `BallastTank{code, positionM, maxChangeTPerHour}`（正为加压、负为排压）。
+- 岸桥 `Crane{code, rateTPerHour, forbiddenHatches}`，默认每桥 ≤ 10 t/h。
+- `sameHatchAllowed=false`（不得同舱）；`forbiddenSimultaneousPairs` 给禁止同时作业的舱对，
+  样例把相邻的 `H1+H2`、`H2+H3` 标为 `CRANE_CROSS_FORBIDDEN`（相邻舱同时卸货→岸桥交叉），
+  因此只有两侧的 `H1+H3` 可双桥并行。
+- 时间片默认 60 分钟。纵向力矩递推（单位 t·m）：
+
+```
+M′ = M − Σ(卸货量 q_h × 舱位 x_h) + Σ(压载增减 Δb_t × 压载舱位 x_t)
+```
+
+  卸走 `x` 处重量会使剩余船舶力矩反向变化。样例 `M0=0`、限值 `±100`。
+  片内力矩随同步作业完成比例线性变化，`M(λ)=M片首 + λ·Δ` 是 λ 的线性函数，
+  绝对值最大值在端点，故只需校验片首/片末即可保证整个时间片不越限。
+
+### 11.2 样例的确定结论（均由单元测试与 `/api/hatch/verify` 锁定）
+
+构型：`H1 x=−20 货20`、`H2 x=0 货10`、`H3 x=+20 货20`；两桥各 10 t/h；中舱压载 `x=0 ±10 t/h`。
+
+| 对照项 | 按舱序优先 `HATCH_ORDER`（舱序 H2→H1→H3） | 按岸桥并行 `PARALLEL_SIDES`（外侧舱优先 H1,H3,H2） |
+| --- | --- | --- |
+| **首小时安排** | `QC1→H2` 卸中舱 **10t**；`QC2` **空等**（同舱被拒、与中舱相邻的 H1/H3 交叉被拒） | `QC1→H1`、`QC2→H3`，**各卸 10t**，无空等 |
+| **首小时卸货 / 片末力矩** | 10t / **0 t·m**（中舱 x=0） | 20t / **0 t·m**（`−10·(−20) −10·(+20)` 的力矩增量 +200−200=0） |
+| **总时长** | **3 个 1h 片 = 3 小时** | **3 片 = 3 小时** |
+| **空等岸桥片** | 1 | 1（在最后一片中舱） |
+| **生成中被拒候选步骤（确定性口径）** | **5**：第1片 1 次同舱 + 2 次交叉；第2/3片各 1 次同舱重试 | **3**：每片 1 次同舱重试 |
+
+- **为什么总时长都是 3h**：总量 50t、两桥合计 20t/h ⇒ 时间片容量下界 `ceil(50/20)=3`；
+  且中舱 H2 与 H1/H3 都相邻禁同时，中舱那 10t 必须用 1 个“另一桥无法并行”的小时，
+  两侧 40t 正好双桥并行 2 小时，故两种合规排法都达到下界 3 片。差异集中在**首小时产出/岸桥利用与被拒步骤**。
+- **纵倾约束真的会拒步骤**：单桥首小时独卸 H1 10t → 力矩 `0 −10·(−20)=+200 t·m > +100`，
+  该步以 `TRIM_MOMENT_EXCEEDED` 被拒（独卸 H3 同理得 −200）。这说明“先卸一侧重货”不可行，
+  必须两侧平衡并行或借助有力臂的压载。
+- **固定“被拒步骤”探针 `constraintProbes`（共 8 条：7 拒 1 放）**：
+  `SAME_HATCH`（`SAME_HATCH_FORBIDDEN`）、`FORBIDDEN_PAIR_1/2`（H1+H2、H2+H3 → `CRANE_CROSS_FORBIDDEN`）、
+  两个 `TRIM_ONE_SIDE_*`（`TRIM_MOMENT_EXCEEDED`，|M|=200）、`CRANE_RATE`（`CRANE_RATE_EXCEEDED`）、
+  `BALLAST_RATE`（`BALLAST_RATE_EXCEEDED`），以及唯一放行的正对照 `LEGAL_PARALLEL_SIDES`（H1+H3，力矩 0）。
+  另可用 `POST /api/hatch/validate` 对任意候选时间片返回**全部**违例（如 H1 报 15t 会同时得到
+  `CRANE_RATE_EXCEEDED` 与 `TRIM_MOMENT_EXCEEDED`，M=300）。
+
+### 11.3 实测完成量、压载迟到回执与“计划≠实测”
+
+落库三张表（见 `schema.sql`）：`hatch_case`（构型 JSON）、`hatch_plan`（每版计划/重排 JSON +
+`provenance_json`）、`hatch_record`（**只增台账**：`CARGO_ACTUAL` 卸货实测 / `BALLAST_ORDER`
+压载计划指令 / `BALLAST_RECEIPT` 压载实测回执）。`hatch_record` 与既有 `work_record` 一样由
+PostgreSQL 触发器 `trg_hatch_record_immutable` 禁止 `UPDATE/DELETE`（错误码 `HATCH_RECORD_IMMUTABLE` → HTTP 409）。
+
+重排起点状态由 `HatchActuals.build(...)` **只根据实测**计算：
+
+- 各舱剩余 = 原货量 − **累计实测卸货量**（不是计划量）；
+- 压载只累加**已收到回执**的实测增减；已下达但回执未到（迟到）的 `BALLAST_ORDER` 进入
+  `pendingBallastReceipts`，其 `plannedChangeT` **不计入** `actualMomentTmM` 与重排构型，
+  并在 `provenance.excludedPlannedBallast` 中逐条写明 `BALLAST_RECEIPT_PENDING`、
+  `countedActualChangeT=0`、`usedPlannedAsActual=false`；
+- 同时给出对照值 `momentIfPendingPlannedCountedTmM`：“若错误地把计划当实测”的力矩，仅用于警示。
+
+自验/脚本固化的演示数值：实测 H1、H3 各卸 10t → 各剩 10t、实测力矩仍 0；下达中舱压载
+**计划 +10t** 但**回执未到**就重排 ⇒ `pending=1`、`receivedBallast.BT-MID=0`、`actualMoment=0`、
+`usedPlannedAsActual=false`；随后提交**迟到回执，实测 +8t（刻意≠计划 10t）** ⇒ 再重排时
+`pending=0`、`receivedBallast.BT-MID=8`，重排只采用回执值 8。对有力臂的压载舱，
+“是否把迟到计划计入”会真实改变力矩（单元测试用 x=10 的压载舱验证：实测 M=0，错误计入计划 +10 会得 +100）。
+
+### 11.4 HTTP 接口（均需 `Authorization: Bearer <token>`）
+
+| 方法/路径 | 角色 | 说明 |
+| --- | --- | --- |
+| `GET /api/hatch`、`GET /api/hatch/sample`、`GET /api/hatch/compare` | 登录 | 样例构型 + 两策略计划 + 首小时/总时长/被拒对比 + 探针 |
+| `GET /api/hatch/config` | 登录 | 仅样例 `HatchConfig` |
+| `POST /api/hatch/compare` | 登录 | 对自定义 `HatchConfig` 做对比（body 可空=样例） |
+| `POST /api/hatch/validate` | 登录 | 校验一个候选时间片，返回全部违例与试算力矩 |
+| `GET /api/hatch/cases`、`GET /api/hatch/cases/{id}` | 登录 | 案例列表 / 详情（构型、实测状态、台账、各版计划、对比） |
+| `POST /api/hatch/cases` | TEAM/DISPATCHER | 建持久化案例并生成 v1 计划（空 body=样例+并行） |
+| `POST /api/hatch/cases/{id}/cargo-actuals` | TEAM/DISPATCHER | 登记本次实测卸货增量 `{hatchCode,deltaT,...}`，超货量 400 |
+| `POST /api/hatch/cases/{id}/ballast-orders` | TEAM/DISPATCHER | 下压载计划 `{tankCode,plannedChangeT}`（此刻仅计划值） |
+| `POST /api/hatch/cases/{id}/ballast-receipts` | TEAM/DISPATCHER | 压载实测回执 `{orderId|orderCode,actualChangeT,late}` |
+| `POST /api/hatch/cases/{id}/replan` | TEAM/DISPATCHER | 只按实测重排，返回新计划与 `provenance` |
+| `POST /api/hatch/verify` | DISPATCHER | 15 项确定性端到端自验（含真实 DB 触发器） |
+| `POST /api/hatch/reset` | DISPATCHER | 清空 hatch_* 案例数据；全局 `POST /api/admin/reset` 也会一并 TRUNCATE |
+
+命令行一键验证（登录 + 内置自验 + 独立 GET 断言 + 真实 HTTP 实测/回执/重排流）：
+
+```bash
+bash scripts/hatch-verify.sh                 # 默认 http://127.0.0.1:8080
+# ... HATCH_HTTP_FLOW_PASSED / ALL_HATCH_CHECKS_PASSED
+```
+
+### 11.5 界面手工路径
+
+打开 <http://localhost:8080>，用 `dispatch/dispatch123` 登录 → 标签 **⑥ 舱口顺序·纵倾工作台**：
+
+1. 顶部即样例结论：舱位示意、两条力矩表、6 张 KPI（首小时卸货量、总时长、被拒数）。
+2. 左右两张时间片表分别是“舱序优先 / 岸桥并行”，每行列出 QC→舱、空等岸桥、本片卸货与片末力矩；
+   下方可展开各自的被拒候选步骤，最底是 8 条约束探针表。
+3. 点 **用样例建立作业案例**：可“登记实测卸货量 / 下达压载计划 / 按最新实测重排”。
+   压载计划在“提交回执”前显示 `待回执/迟到`，状态区红色提示其计划值未计入；
+   提交回执（可把实测改成 8）后再重排，顶部 `provenance` 横幅显示采用的是回执实测值。
+4. 点 **▶ 运行本题自验（15 项）**，页内列出每条断言；该操作会清空并重建 `HATCH-VERIFY` 案例。
+
+### 11.6 本特性的测试
+
+- `src/test/java/com/port/berth/hatch/HatchPlannerTest.java`：**9 个**纯 JUnit 用例，精确锁定
+  11.2/11.3 的全部数值与“迟到压载计划不冒充实测”。`mvn test` 合计 **13** 个用例全绿，既有 4 个无回归。
+- `scripts/hatch-verify.sh`：对运行中的服务做真实 HTTP 验证；开发期已在常规库 `ccdev:5432`
+  与一个**全新空库**（临时 `hatchfresh`，8081 端口，验证后已删除）上分别跑通。
+- 既有 `scripts/replay.sh` 在加入本特性后仍为 **46/46**，数据库重置 TRUNCATE 列表已包含三张 hatch 表。

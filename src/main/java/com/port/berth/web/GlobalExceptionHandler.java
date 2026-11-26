@@ -52,6 +52,11 @@ public class GlobalExceptionHandler {
             body.put("message", "已完成的引航/装卸记录不可修改或删除，只能通过重排延续未完成作业");
             return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
         }
+        if (msg != null && msg.contains("HATCH_RECORD_IMMUTABLE")) {
+            body.put("code", "HATCH_RECORD_IMMUTABLE");
+            body.put("message", "舱口实测/回执台账只增不改不删；如需更正请补登一条新的实测记录，再基于最新实测重排");
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
+        }
         log.warn("数据完整性冲突", ex);
         body.put("code", "DATA_INTEGRITY_VIOLATION");
         body.put("message", msg);

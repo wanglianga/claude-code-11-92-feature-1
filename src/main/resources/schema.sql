@@ -275,3 +275,52 @@ CREATE TABLE IF NOT EXISTS impact_item (
     handled     BOOLEAN NOT NULL DEFAULT FALSE
 );
 CREATE INDEX IF NOT EXISTS idx_impact_disruption ON impact_item(disruption_id);
+
+-- ============================================================================
+-- 舱口顺序 / 纵向力矩 / 岸桥禁入 工作台（本题新增）
+-- 计划值与实测值严格分离：hatch_record 为只增台账（卸货实测、压载计划指令、
+-- 压载实测回执），重排只引用实测，未到回执的压载计划不得冒充实测。
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS hatch_case (
+    id          BIGSERIAL PRIMARY KEY,
+    code        VARCHAR(48) UNIQUE NOT NULL,
+    name        VARCHAR(160),
+    voyage_id   BIGINT,
+    strategy    VARCHAR(24) NOT NULL DEFAULT 'PARALLEL_SIDES', -- HATCH_ORDER / PARALLEL_SIDES
+    config_json TEXT NOT NULL,
+    created_at  TIMESTAMP NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMP NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS hatch_plan (
+    id              BIGSERIAL PRIMARY KEY,
+    case_id         BIGINT NOT NULL REFERENCES hatch_case(id) ON DELETE CASCADE,
+    version_no      INT NOT NULL,
+    basis           VARCHAR(32) NOT NULL,  -- INITIAL_PLAN / REPLANNED_FROM_ACTUALS
+    strategy        VARCHAR(24) NOT NULL,
+    summary_json    TEXT,
+    plan_json       TEXT NOT NULL,
+    provenance_json TEXT,                  -- 重排时“哪些实测被采用/哪些待回执计划被排除”
+    created_at      TIMESTAMP NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_hatch_plan_case ON hatch_plan(case_id, version_no);
+
+-- 只增台账：CARGO_ACTUAL（卸货实测）/ BALLAST_ORDER（压载计划指令）/ BALLAST_RECEIPT（压载实测回执）
+CREATE TABLE IF NOT EXISTS hatch_record (
+    id            BIGSERIAL PRIMARY KEY,
+    case_id       BIGINT NOT NULL REFERENCES hatch_case(id) ON DELETE CASCADE,
+    rec_type      VARCHAR(24) NOT NULL,
+    order_code    VARCHAR(48),             -- 压载指令与其回执的关联码
+    hatch_code    VARCHAR(40),
+    tank_code     VARCHAR(40),
+    delta_t       DOUBLE PRECISION,        -- CARGO_ACTUAL：本次实测卸货增量
+    actual_t      DOUBLE PRECISION,        -- CARGO_ACTUAL：累计实测；RECEIPT：回执实测增减
+    planned_t     DOUBLE PRECISION,        -- BALLAST_ORDER：计划增减
+    late          BOOLEAN NOT NULL DEFAULT FALSE, -- 回执是否迟到
+    operator_name VARCHAR(128),
+    note          TEXT,
+    created_at    TIMESTAMP NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_hatch_record_case ON hatch_record(case_id, id);
+

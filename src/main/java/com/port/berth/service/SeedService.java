@@ -53,7 +53,8 @@ public class SeedService implements ApplicationRunner {
                 TRUNCATE TABLE impact_item, disruption, plan_event, work_record,
                     resource_occupation, resource_lock, plan_segment, berth_plan,
                     equipment_fault, work_window, quay_crane, tug, pilot, tide_slot,
-                    berth_cargo_limit, berth, voyage, ship, auth_token, app_user
+                    berth_cargo_limit, berth, voyage, ship, auth_token, app_user,
+                    hatch_record, hatch_plan, hatch_case
                 RESTART IDENTITY CASCADE
                 """);
         seedAll();

@@ -43,6 +43,7 @@
       <button data-tab="team" class="tab" onclick="switchTab('team')">③ 班组看板</button>
       <button data-tab="sim" class="tab" onclick="switchTab('sim')">④ 模拟与扰动</button>
       <button data-tab="replay" class="tab" onclick="switchTab('replay')">⑤ 一键回放验证</button>
+      <button data-tab="hatch" class="tab hatch-tab" onclick="switchTab('hatch')">⑥ 舱口顺序·纵倾工作台</button>
     </nav>
     <div class="topbar-right">
       <span id="current-user" class="user-badge"></span>
@@ -166,6 +167,40 @@
         </div>
         <div id="replay-summary"></div>
         <div id="replay-result"></div>
+      </div>
+    </section>
+
+    <!-- ⑥ 舱口顺序 / 纵倾 / 岸桥交叉 工作台 -->
+    <section id="tab-hatch" class="tab-panel">
+      <div class="card">
+        <div class="row-between wrap">
+          <h2>舱口顺序 · 纵向力矩 · 岸桥禁入 工作台</h2>
+          <div class="row gap wrap">
+            <button class="btn" onclick="hatchLoadSample()">↻ 刷新样例对比</button>
+            <button class="btn primary" onclick="hatchCreateCase()">用样例建立作业案例</button>
+            <button class="btn success" id="btn-hatch-verify" onclick="hatchVerify()">▶ 运行本题自验（15 项）</button>
+          </div>
+        </div>
+        <p class="hint">
+          样例：初始纵向力矩 <b>0</b>，三舱位置 <b>−20 / 0 / +20 m</b>、待卸 <b>20 / 10 / 20 t</b>；
+          压载仅中舱 <b>±10 t/h</b>；力矩限 <b>±100 t·m</b>；两台岸桥各 <b>≤10 t/h</b>，
+          <b>不得同舱或交叉</b>（相邻舱 H1-H2、H2-H3 禁同时，仅两侧 H1+H3 可并行）。
+          力矩递推 <code>M′ = M − Σ 卸货量×舱位 + Σ 压载增减×压载舱位</code>。
+          “建立作业案例”后可登记<b>实测</b>卸货量与压载<b>回执</b>；回执迟到时计划压载不会冒充实测。
+        </p>
+        <div id="hatch-verify"></div>
+        <div id="hatch-overview"><p class="hint">点击“刷新样例对比”加载两策略时间片、首小时、总时长与被拒步骤。</p></div>
+      </div>
+
+      <div class="card" id="hatch-case-card" style="display:none">
+        <div class="row-between wrap">
+          <h2>现场实测与实测重排 · 案例 <span id="hatch-case-code" class="mono"></span></h2>
+          <div class="row gap">
+            <button class="btn tiny" onclick="hatchRefreshCase()">刷新案例</button>
+            <button class="btn warn tiny" onclick="hatchResetAll()">清空舱口案例</button>
+          </div>
+        </div>
+        <div id="hatch-case"></div>
       </div>
     </section>
   </main>

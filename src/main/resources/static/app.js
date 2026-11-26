@@ -152,6 +152,7 @@ function switchTab(tab) {
   if (tab === 'planner') { loadVoyages().then(renderPlannerSelect); }
   if (tab === 'team') { loadBoard(); startTeamTimer(); } else stopTeamTimer();
   if (tab === 'sim') { loadTideTable(); loadDisruptions(); }
+  if (tab === 'hatch') { hatchOnShow(); }
 }
 function startTeamTimer() {
   stopTeamTimer();
@@ -648,6 +649,393 @@ function downloadReplay() {
   const blob = new Blob([JSON.stringify(state.lastReplay, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob); a.download = 'replay-result.json'; a.click();
+}
+
+/* ================= ⑥ 舱口顺序 · 纵倾 · 岸桥交叉 工作台 ================= */
+state.hatch = null;
+state.hatchLoaded = false;
+state.hatchCaseId = null;
+
+const hn = (v) => (v === null || v === undefined ? '–' : (Math.round(Number(v) * 100) / 100).toString());
+const HATCH_STRAT_LABEL = { HATCH_ORDER: '舱序优先', PARALLEL_SIDES: '岸桥并行' };
+
+function hatchOnShow() {
+  if (!state.hatchLoaded) hatchLoadSample();
+}
+
+async function hatchLoadSample() {
+  try {
+    state.hatch = await api('/api/hatch/sample');
+    state.hatchLoaded = true;
+    renderHatchOverview();
+  } catch (e) { showError(e); }
+}
+
+function hatchDiagram(cfg) {
+  const hs = [...(cfg.hatches || [])].sort((a, b) => a.positionM - b.positionM);
+  const xs = hs.map((h) => h.positionM);
+  const lo = Math.min(...xs, 0), hi = Math.max(...xs, 0);
+  const span = (hi - lo) || 1;
+  const pos = (x) => 8 + ((x - lo) / span) * 84;
+  return `<div class="hatch-diagram">
+    <div class="ship-hull">
+      <div class="hull-center"></div>
+      ${hs.map((h) => `<div class="hatch-node" style="left:${pos(h.positionM)}%">
+        <div class="hatch-box"><b>${esc(h.code)}</b><span>${hn(h.cargoT)} t</span></div>
+        <div class="hatch-x">x=${hn(h.positionM)} m · 序${h.order}</div>
+      </div>`).join('')}
+    </div>
+    <div class="ship-axis-label">船尾（−）　←　船中 0　→　船首（+）</div>
+  </div>`;
+}
+
+function hatchGauge(moment, limit) {
+  const lim = Math.abs(Number(limit) || 100);
+  const raw = 50 + (Number(moment) / lim) * 50;
+  const over = raw < 0 || raw > 100;
+  const vis = Math.max(2, Math.min(98, raw));
+  return `<div class="hatch-gauge ${over ? 'over' : ''}">
+    <div class="gauge-track"><div class="gauge-zero"></div>
+      <div class="gauge-marker ${over ? 'over' : ''}" style="left:${vis}%"></div>
+    </div>
+    <div class="gauge-labels"><span>−${lim}</span><span>0</span><span>+${lim}</span></div>
+    <div class="gauge-val ${over ? 'bad' : 'ok'}">M = ${hn(moment)} t·m ${over ? '⚠ 越限' : '✓ 在 ±' + lim + ' 内'}</div>
+  </div>`;
+}
+
+function hatchMoveChips(s) {
+  const moves = (s.craneMoves || []).map((m) =>
+    `<span class="res-chip hatch-move">🏗️ ${esc(m.craneCode)} → ${esc(m.hatchCode)} · ${hn(m.dischargeT)}t</span>`).join('');
+  const idle = (s.idleCranes || []).map((c) =>
+    `<span class="res-chip hatch-idle">⏸ ${esc(c)} 空等</span>`).join('');
+  return moves + idle || '<span class="hint">无动作</span>';
+}
+
+function hatchPlanTable(plan) {
+  if (!plan) return '';
+  const rows = (plan.slots || []).map((s) => {
+    const mCls = Math.abs(s.momentEndTmM) > 100 + 1e-6 ? 'moment-bad' : '';
+    return `<tr>
+      <td class="mono">${s.slot}<div class="hint">${esc(s.timeLabel || '')}</div></td>
+      <td>${hatchMoveChips(s)}</td>
+      <td><b>${hn(s.dischargedT)}</b> t</td>
+      <td class="mono ${mCls}">${hn(s.momentEndTmM)}</td>
+    </tr>`;
+  }).join('');
+  return `<div>
+    <div class="row-between"><h3 class="section-title">${esc(plan.strategyLabel || HATCH_STRAT_LABEL[plan.strategy])}</h3>
+      <span class="badge ${plan.feasible ? 'CONFIRMED' : 'WITHDRAWN'}">${plan.feasible ? '可行 · ' + hn(plan.totalDurationHours) + 'h / ' + plan.slotCount + ' 片' : '不可行'}</span>
+    </div>
+    <table class="data hatch-slots"><thead><tr><th>时间片</th><th>岸桥动作</th><th>本片卸货</th><th>片末力矩 t·m</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4" class="hint">无时间片</td></tr>'}</tbody></table>
+    <p class="hint">空等岸桥片 ${plan.idleCraneSlots} · 占用岸桥片 ${plan.busyCraneSlots} · 容量下界 ${plan.capacityLowerBoundSlots} 片 · ${plan.makespanOptimal ? '✅ 达到时间片容量下界（最优）' : ''}</p>
+    ${hatchRejectDetails(plan)}
+  </div>`;
+}
+
+function hatchRejectDetails(plan) {
+  const rs = plan.rejectedSteps || [];
+  if (!rs.length) return '<p class="hint">该策略生成过程无被拒候选步骤。</p>';
+  return `<details class="raw"><summary>查看该策略 ${rs.length} 个被拒候选步骤（${esc(JSON.stringify(plan.rejectionCodeCounts || {}))}）</summary>
+    <table class="data"><thead><tr><th>片</th><th>岸桥</th><th>舱</th><th>尝试量</th><th>拒绝原因</th></tr></thead><tbody>
+    ${rs.map((r) => `<tr>
+      <td class="mono">${r.slot ?? ''}</td>
+      <td>${esc(r.craneCode || '–')}</td>
+      <td>${esc(r.hatchCode || '–')}</td>
+      <td>${r.attemptedDischargeT != null ? hn(r.attemptedDischargeT) + 't' : '–'}</td>
+      <td>${(r.violations || []).map((v) => `<div><span class="code">[${esc(v.code)}]</span> ${esc(v.message)}</div>`).join('')}
+          <div class="hint">${esc(r.explanation || '')}</div></td>
+    </tr>`).join('')}
+    </tbody></table></details>`;
+}
+
+function renderHatchOverview() {
+  const d = state.hatch;
+  const el = $('#hatch-overview');
+  if (!d || !el) return;
+  const cfg = d.config;
+  const fh = d.firstHour || {};
+  const td = d.totalDuration || {};
+  const rj = d.rejectedSteps || {};
+  const probes = d.constraintProbes || [];
+
+  el.innerHTML = `
+    <div class="hatch-conclusions">
+      ${(d.conclusions || []).map((c) => `<div class="verdict ok" style="margin:6px 0">✅ ${esc(c)}</div>`).join('')}
+    </div>
+
+    <div class="grid two-col" style="margin-top:10px">
+      <div class="card inner">
+        <h3 class="section-title">船舶舱位布置</h3>
+        ${hatchDiagram(cfg)}
+      </div>
+      <div class="card inner">
+        <h3 class="section-title">并行首小时片末力矩（H1+H3 各 10t）</h3>
+        ${hatchGauge(fh.parallelSides ? fh.parallelSides.momentEndTmM : 0, cfg.momentLimitTmM)}
+        <h3 class="section-title" style="margin-top:14px">舱序优先首小时片末力矩（仅 H2 10t）</h3>
+        ${hatchGauge(fh.hatchOrder ? fh.hatchOrder.momentEndTmM : 0, cfg.momentLimitTmM)}
+      </div>
+    </div>
+
+    <div class="hatch-kpis">
+      <div class="kpi"><div class="kpi-v">${hn(fh.parallelSides ? fh.parallelSides.dischargedT : 0)} t</div><div class="kpi-l">并行策略首小时卸货<br/>QC1→H1 + QC2→H3</div></div>
+      <div class="kpi warn"><div class="kpi-v">${hn(fh.hatchOrder ? fh.hatchOrder.dischargedT : 0)} t</div><div class="kpi-l">舱序优先首小时卸货<br/>仅 H2，另一桥空等</div></div>
+      <div class="kpi"><div class="kpi-v">${hn(td.parallelHours)} h</div><div class="kpi-l">并行总时长（${td.parallelSlots} 片）</div></div>
+      <div class="kpi warn"><div class="kpi-v">${hn(td.hatchOrderHours)} h</div><div class="kpi-l">舱序优先总时长（${td.hatchOrderSlots} 片）</div></div>
+      <div class="kpi bad"><div class="kpi-v">${rj.hatchOrderSearchRejectedSteps}</div><div class="kpi-l">舱序策略被拒候选步骤<br/>并行策略 ${rj.parallelSearchRejectedSteps} 个</div></div>
+      <div class="kpi bad"><div class="kpi-v">${rj.constraintProbeRejected}/${rj.constraintProbeTotal}</div><div class="kpi-l">违规试排被拒 / 试排总数<br/>含 ${rj.constraintProbeAccepted} 个合法正对照</div></div>
+    </div>
+    <p class="hint">${esc(td.note || '')}</p>
+
+    <div class="grid two-col hatch-plan-grid">
+      ${hatchPlanTable(d.hatchOrderPlan)}
+      ${hatchPlanTable(d.parallelPlan)}
+    </div>
+
+    <h3 class="section-title">“被拒步骤”约束探针（同舱 / 交叉 / 纵倾 / 速率）</h3>
+    <table class="data">
+      <thead><tr><th>试排步骤</th><th>期望</th><th>实际</th><th>试算力矩</th><th>违例</th></tr></thead>
+      <tbody>${probes.map((p) => `<tr class="${p.asExpected ? '' : 'row-bad'}">
+        <td>${esc(p.title)}</td>
+        <td>${p.expectedAccepted ? '应通过' : '应拒绝'}</td>
+        <td><span class="badge ${p.accepted ? 'CONFIRMED' : 'WITHDRAWN'}">${p.accepted ? '通过' : '拒绝'}</span>
+            ${p.asExpected ? '✓' : '✗ 不符合预期'}</td>
+        <td class="mono">${p.momentAfterTmM != null ? hn(p.momentAfterTmM) : '–'}</td>
+        <td>${(p.violations || []).map((v) => `<div><span class="code">[${esc(v.code)}]</span> ${esc(v.message)}</div>`).join('') || '<span class="hint">无</span>'}</td>
+      </tr>`).join('')}</tbody>
+    </table>`;
+}
+
+/* ---------- 持久化案例 / 实测 / 回执 / 重排 ---------- */
+
+async function hatchCreateCase() {
+  try {
+    const d = await api('/api/hatch/cases', { method: 'POST', body: { strategy: 'PARALLEL_SIDES' } });
+    state.hatchCaseId = d.id;
+    $('#hatch-case-card').style.display = '';
+    hatchRenderCase(d);
+    toast('✅ 已建立样例作业案例 #' + d.id, 'success');
+    $('#hatch-case-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (e) { showError(e); }
+}
+
+async function hatchRefreshCase() {
+  if (!state.hatchCaseId) return;
+  try {
+    const d = await api('/api/hatch/cases/' + state.hatchCaseId);
+    hatchRenderCase(d);
+  } catch (e) { showError(e); }
+}
+
+function hatchRenderCase(d) {
+  state.hatchCaseId = d.id;
+  $('#hatch-case-code').textContent = '#' + d.id + ' ' + d.code;
+  const cfg = d.config, st = d.state || {};
+  const plans = d.plans || [];
+  const latest = plans[plans.length - 1];
+  const prov = latest && latest.provenance ? latest.provenance : null;
+
+  const hatchRows = cfg.hatches.map((h) => {
+    const actual = Number((st.actualDischargedT || {})[h.code] || 0);
+    const remain = Number((st.remainingCargoT || {})[h.code] != null ? st.remainingCargoT[h.code] : Math.max(0, h.cargoT - actual));
+    const pct = Math.min(100, (actual / h.cargoT) * 100);
+    return `<tr><td><b>${esc(h.code)}</b><div class="hint">x=${hn(h.positionM)}m</div></td>
+      <td>${hn(h.cargoT)}</td><td>${hn(actual)}</td><td>${hn(remain)}</td>
+      <td style="min-width:140px"><div class="prog"><div class="prog-bar" style="width:${pct}%"></div></div></td></tr>`;
+  }).join('');
+
+  const pending = st.pendingBallastReceipts || [];
+  const ballastMap = st.receivedBallastChangeT || {};
+
+  $('#hatch-case').innerHTML = `
+    ${prov ? hatchProvBanner(prov, latest) : ''}
+    <div class="row gap wrap" style="margin:8px 0">
+      <button class="btn primary tiny" onclick="hatchAddCargo()">＋ 登记实测卸货量</button>
+      <button class="btn tiny" onclick="hatchAddBallastOrder()">＋ 下达压载计划</button>
+      <button class="btn success tiny" onclick="hatchReplan()">↻ 按最新实测重排剩余作业</button>
+    </div>
+
+    <div class="grid two-col">
+      <div>
+        <h3 class="section-title">各舱实测完成 / 剩余</h3>
+        <table class="data"><thead><tr><th>舱</th><th>应卸 t</th><th>实测 t</th><th>剩余 t</th><th>完成</th></tr></thead>
+          <tbody>${hatchRows}</tbody></table>
+        ${hatchGauge(st.actualMomentTmM, cfg.momentLimitTmM)}
+        <p class="hint">实测当前力矩 <b>${hn(st.actualMomentTmM)}</b> t·m；
+           若把未回执压载的计划值错误计入，会得到 <b>${hn(st.momentIfPendingPlannedCountedTmM)}</b> t·m（仅对照，不用于重排）。</p>
+      </div>
+      <div>
+        <h3 class="section-title">压载回执状态</h3>
+        ${cfg.ballastTanks.map((t) => `<p class="kv">${esc(t.code)}（x=${hn(t.positionM)}m，±${hn(t.maxChangeTPerHour)}t/h）：
+           已回执实测累计 <b>${hn(ballastMap[t.code] || 0)}</b> t</p>`).join('')}
+        ${pending.length ? `<div class="verdict bad">⏳ ${pending.length} 条压载指令回执未到（迟到）：
+           ${pending.map((p) => `${esc(p.orderCode)} ${esc(p.tankCode)} 计划 ${hn(p.plannedChangeT)}t`).join('；')}
+           <br/>其计划值<b>未计入</b>实测状态与重排。</div>`
+           : '<div class="verdict ok">✅ 没有待回执压载指令；所有压载量均来自实测回执。</div>'}
+        <h3 class="section-title" style="margin-top:12px">只增台账（实测 / 指令 / 回执，DB 触发器禁止改删）</h3>
+        ${hatchRecordsTable(d.records || [])}
+      </div>
+    </div>
+
+    <h3 class="section-title">计划版本（${plans.length}）</h3>
+    ${plans.slice().reverse().map((p, idx) => {
+      const plan = p.plan || {};
+      const open = idx === 0 ? 'open' : '';
+      return `<details class="raw" ${open} style="margin-bottom:8px">
+        <summary><b>v${p.versionNo}</b> · ${p.basis === 'REPLANNED_FROM_ACTUALS' ? '实测重排' : '初始计划'} ·
+          ${esc(HATCH_STRAT_LABEL[p.strategy] || p.strategy)} · ${esc(p.summary || '')}</summary>
+        ${hatchPlanTable(plan)}
+      </details>`;
+    }).join('')}`;
+}
+
+function hatchProvBanner(prov, latest) {
+  const pend = prov.pendingBallastReceipts || [];
+  return `<div class="verdict ${pend.length ? 'bad' : 'ok'}" style="margin:8px 0">
+    <b>重排 v${latest.versionNo} 数据来源：${esc(prov.basis)}</b> ·
+    usedPlannedAsActual=<b>${String(prov.usedPlannedAsActual)}</b> ·
+    实测力矩 ${hn(prov.actualMomentTmM)} t·m ·
+    重排初始力矩 ${hn(prov.remainingConfigInitialMomentTmM)} t·m
+    ${prov.warning ? `<br/>⚠️ ${esc(prov.warning)}` : '<br/>✅ 无待回执压载，采用的全部是真实回执值。'}
+  </div>`;
+}
+
+function hatchRecordsTable(records) {
+  if (!records.length) return '<p class="hint">暂无台账记录。</p>';
+  const typeLabel = { CARGO_ACTUAL: '卸货实测', BALLAST_ORDER: '压载计划', BALLAST_RECEIPT: '压载回执' };
+  return `<table class="data"><thead><tr><th>#</th><th>类型</th><th>舱/压载舱</th><th>量 t</th><th>状态/操作</th><th>时间</th></tr></thead><tbody>
+    ${records.slice().reverse().map((r) => {
+      let qty = '–';
+      if (r.recType === 'CARGO_ACTUAL') qty = `+${hn(r.deltaT)}（累计 ${hn(r.actualT)}）`;
+      if (r.recType === 'BALLAST_ORDER') qty = `计划 ${hn(r.plannedT)}`;
+      if (r.recType === 'BALLAST_RECEIPT') qty = `实测 ${hn(r.actualT)}`;
+      const linkedReceipt = r.recType === 'BALLAST_ORDER' &&
+        records.some((x) => x.recType === 'BALLAST_RECEIPT' && x.orderCode === r.orderCode);
+      let status;
+      if (r.recType === 'BALLAST_ORDER') {
+        status = linkedReceipt ? '<span class="badge CONFIRMED">已回执</span>'
+          : `<span class="badge STAGED">待回执/迟到</span>
+             <button class="btn success tiny" onclick="hatchReceipt(${r.id},'${esc(r.orderCode)}',${Number(r.plannedT)})">提交回执</button>`;
+      } else if (r.recType === 'BALLAST_RECEIPT') {
+        status = `<span class="badge CONFIRMED">已回执${r.late ? '·迟到' : ''}</span>`;
+      } else {
+        status = esc(r.operatorName || '实测');
+      }
+      return `<tr><td class="mono">${r.id}</td><td>${typeLabel[r.recType] || r.recType}</td>
+        <td>${esc(r.hatchCode || r.tankCode || '–')}</td><td class="mono">${qty}</td>
+        <td>${status}</td><td class="mono hint">${esc(String(r.createdAt || '').replace('T', ' ').slice(5, 19))}</td></tr>`;
+    }).join('')}</tbody></table>`;
+}
+
+async function hatchAddCargo() {
+  const d = await api('/api/hatch/cases/' + state.hatchCaseId);
+  const vals = await openForm({
+    title: '登记实测卸货增量（写入只增台账）',
+    fields: [
+      { key: 'hatchCode', label: '舱口', type: 'select', value: 'H1',
+        options: d.config.hatches.map((h) => ({ value: h.code, label: `${h.code}（应卸 ${h.cargoT}t / x=${h.positionM}m）` })) },
+      { key: 'deltaT', label: '本次实测完成量（吨）', type: 'number', value: '10' },
+      { key: 'operatorName', label: '操作人', value: state.user ? state.user.displayName : 'dispatch' },
+      { key: 'note', label: '备注', value: '现场实测' },
+    ],
+  });
+  if (!vals) return;
+  try {
+    const updated = await api(`/api/hatch/cases/${state.hatchCaseId}/cargo-actuals`, {
+      method: 'POST',
+      body: { hatchCode: vals.hatchCode, deltaT: Number(vals.deltaT), operatorName: vals.operatorName, note: vals.note },
+    });
+    hatchRenderCase(updated); toast('✅ 实测卸货量已登记', 'success');
+  } catch (e) { showError(e); }
+}
+
+async function hatchAddBallastOrder() {
+  const d = await api('/api/hatch/cases/' + state.hatchCaseId);
+  if (!d.config.ballastTanks.length) return toast('当前构型没有压载舱', 'error');
+  const vals = await openForm({
+    title: '下达压载调整计划（此时仅为计划值）',
+    fields: [
+      { key: 'tankCode', label: '压载舱', type: 'select', value: d.config.ballastTanks[0].code,
+        options: d.config.ballastTanks.map((t) => ({ value: t.code, label: `${t.code}（x=${t.positionM}m，±${t.maxChangeTPerHour}t/h）` })) },
+      { key: 'plannedChangeT', label: '计划增减（吨，正=加压 / 负=排压）', type: 'number', value: '10' },
+      { key: 'note', label: '备注', value: '压载计划指令' },
+    ],
+  });
+  if (!vals) return;
+  try {
+    const updated = await api(`/api/hatch/cases/${state.hatchCaseId}/ballast-orders`, {
+      method: 'POST',
+      body: { tankCode: vals.tankCode, plannedChangeT: Number(vals.plannedChangeT), note: vals.note },
+    });
+    hatchRenderCase(updated); toast('✅ 压载计划已下达；回执到达前不会计为实测', 'success');
+  } catch (e) { showError(e); }
+}
+
+async function hatchReceipt(orderId, orderCode, planned) {
+  const vals = await openForm({
+    title: `提交压载实测回执 ${orderCode}`,
+    fields: [
+      { key: 'actualChangeT', label: `回执实测增减（吨；原计划 ${planned}，可不同）`, type: 'number', value: String(planned) },
+      { key: 'late', label: '回执是否迟到', type: 'select', value: 'true',
+        options: [{ value: 'true', label: '是，回执迟到' }, { value: 'false', label: '否，按时回执' }] },
+      { key: 'operatorName', label: '回执/操作人', value: state.user ? state.user.displayName : 'crane' },
+    ],
+  });
+  if (!vals) return;
+  try {
+    const updated = await api(`/api/hatch/cases/${state.hatchCaseId}/ballast-receipts`, {
+      method: 'POST',
+      body: { orderId, actualChangeT: Number(vals.actualChangeT), late: vals.late === 'true', operatorName: vals.operatorName },
+    });
+    hatchRenderCase(updated);
+    toast(Number(vals.actualChangeT) === Number(planned) ? '✅ 回执已登记' : '✅ 回执已登记：重排将采用实测 ' + vals.actualChangeT + 't，而非计划 ' + planned + 't', 'success');
+  } catch (e) { showError(e); }
+}
+
+async function hatchReplan() {
+  try {
+    const r = await api(`/api/hatch/cases/${state.hatchCaseId}/replan`, { method: 'POST', body: {} });
+    hatchRenderCase(r.caseDetail);
+    const n = (r.provenance.pendingBallastReceipts || []).length;
+    toast(n ? `⚠️ 已按实测重排 v${r.versionNo}；${n} 条迟到压载计划被排除，未冒充实测`
+            : `✅ 已按实测重排 v${r.versionNo}`, n ? 'error' : 'success');
+  } catch (e) { showError(e); }
+}
+
+async function hatchResetAll() {
+  if (!confirm('清空全部舱口工作台案例/台账/计划？不影响泊位主数据。')) return;
+  try {
+    await api('/api/hatch/reset', { method: 'POST' });
+    state.hatchCaseId = null;
+    $('#hatch-case-card').style.display = 'none';
+    toast('已清空舱口案例');
+  } catch (e) { showError(e); }
+}
+
+async function hatchVerify() {
+  const btn = $('#btn-hatch-verify');
+  btn.disabled = true;
+  $('#hatch-verify').innerHTML = '<div class="verdict ok">⏳ 正在运行舱口特性 15 项端到端自验（含真实 PostgreSQL 触发器）…</div>';
+  try {
+    const d = await api('/api/hatch/verify', { method: 'POST' });
+    $('#hatch-verify').innerHTML = `<div class="verdict ${d.allPassed ? 'ok' : 'bad'}">
+        ${d.allPassed ? '✅ 舱口特性自验全部通过 ' + d.passed + '/' + d.total : '❌ 存在未通过项 ' + d.passed + '/' + d.total}
+      </div>
+      <div class="replay-block"><div class="rb-body">
+        ${(d.checks || []).map((c) => `<div class="check-row ${c.pass ? 'pass' : 'fail'}">
+          <span class="check-icon">${c.pass ? '✓' : '✗'}</span><div>${esc(c.name)}
+          ${c.pass ? '' : `<div class="check-detail">期望：${esc(JSON.stringify(c.expected))} 实际：${esc(JSON.stringify(c.actual))}</div>`}</div>
+        </div>`).join('')}
+      </div></div>`;
+    // verify 会 TRUNCATE 舱口案例，前端当前案例已失效
+    state.hatchCaseId = null;
+    $('#hatch-case-card').style.display = 'none';
+    state.hatchLoaded = false;
+    hatchLoadSample();
+  } catch (e) {
+    showError(e);
+    $('#hatch-verify').innerHTML = '<div class="verdict bad">自验调用失败：' + esc(e.message) + '</div>';
+  } finally { btn.disabled = false; }
 }
 
 boot();

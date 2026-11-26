@@ -233,3 +233,62 @@ pre.json { background: #0e1b2c; color: #c9e3ff; padding: 14px; border-radius: 9p
 .modal .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
 .kv { font-size: 12.5px; color: var(--muted); line-height: 1.8; }
 .section-title { margin: 16px 0 8px; font-size: 14px; color: var(--navy); border-left: 4px solid var(--blue); padding-left: 8px; }
+
+/* ================= ⑥ 舱口顺序·纵倾工作台 ================= */
+.hatch-tab { position: relative; }
+.hatch-plan-grid { grid-template-columns: 1fr 1fr !important; }
+.card.inner { background: #f8fafd; box-shadow: none; border: 1px solid #e6ecf4; }
+.row-bad { background: #fff3f2; }
+.code { color: #b3261e; font-weight: 700; font-size: 11px; }
+
+.hatch-conclusions .verdict { font-size: 13px; font-weight: 600; padding: 8px 12px; margin: 6px 0; }
+
+/* 船与舱位示意 */
+.hatch-diagram { padding: 8px 4px 0; }
+.ship-hull {
+  position: relative; height: 118px; margin: 6px 6px 0;
+  background: linear-gradient(180deg, #dfeaf7 0%, #c6daf0 100%);
+  border: 2px solid #7d9cc2; border-radius: 10px 10px 26px 26px / 10px 10px 40px 40px;
+}
+.hull-center { position: absolute; left: 50%; top: 6px; bottom: 6px; width: 0; border-left: 2px dashed #8aa3c0; }
+.hatch-node { position: absolute; top: 14px; transform: translateX(-50%); text-align: center; width: 96px; }
+.hatch-box {
+  background: #fff; border: 2px solid var(--blue, #2f6fed); border-radius: 8px;
+  padding: 6px 4px; box-shadow: 0 2px 6px rgba(47,111,237,.18);
+  display: flex; flex-direction: column; font-size: 12px;
+}
+.hatch-box b { color: var(--navy, #16324f); font-size: 13px; }
+.hatch-box span { color: var(--muted, #6b7a90); }
+.hatch-x { margin-top: 4px; font-size: 11px; color: var(--muted, #6b7a90); font-family: ui-monospace, monospace; }
+.ship-axis-label { text-align: center; font-size: 11.5px; color: var(--muted, #6b7a90); margin-top: 6px; }
+
+/* 力矩表 */
+.hatch-gauge { margin: 10px 0 4px; }
+.gauge-track { position: relative; height: 12px; border-radius: 7px;
+  background: linear-gradient(90deg, #f6c9c4 0%, #f3e6c0 25%, #d8f0e2 50%, #f3e6c0 75%, #f6c9c4 100%);
+  border: 1px solid #d5dde8; }
+.gauge-zero { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 2px; background: #5a6b82; }
+.gauge-marker { position: absolute; top: -5px; width: 4px; height: 22px; margin-left: -2px;
+  background: #16324f; border-radius: 2px; box-shadow: 0 0 0 2px #fff; transition: left .3s; }
+.gauge-marker.over { background: var(--red, #d32f2f); }
+.gauge-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted, #6b7a90); margin-top: 3px; font-family: ui-monospace, monospace; }
+.gauge-val { margin-top: 6px; font-size: 13px; font-weight: 700; font-family: ui-monospace, monospace; }
+.gauge-val.ok { color: #0c7a52; } .gauge-val.bad { color: #b3261e; }
+
+/* KPI */
+.hatch-kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin: 14px 0 6px; }
+.kpi { background: #f4f8ff; border: 1px solid #dce8fb; border-radius: 10px; padding: 12px 10px; text-align: center; }
+.kpi .kpi-v { font-size: 22px; font-weight: 800; color: var(--blue, #2f6fed); font-family: ui-monospace, monospace; }
+.kpi .kpi-l { font-size: 11.5px; color: var(--muted, #6b7a90); margin-top: 4px; line-height: 1.45; }
+.kpi.warn { background: #fff8ec; border-color: #f3ddb0; } .kpi.warn .kpi-v { color: #b07409; }
+.kpi.bad { background: #fef1f0; border-color: #f2c4c0; } .kpi.bad .kpi-v { color: #b3261e; }
+@media (max-width: 1200px) { .hatch-kpis { grid-template-columns: repeat(3, 1fr); } }
+
+.hatch-move { background: #e7f0ff; border-color: #bcd4fb; }
+.hatch-idle { background: #f1f1f1; border-color: #ddd; color: #777; }
+.moment-bad { color: #b3261e; font-weight: 800; }
+.hatch-slots td { vertical-align: top; }
+
+/* 进度条 */
+.prog { height: 8px; background: #e8edf5; border-radius: 5px; overflow: hidden; }
+.prog-bar { height: 100%; background: linear-gradient(90deg, #2f6fed, #4aa3ff); border-radius: 5px; }
